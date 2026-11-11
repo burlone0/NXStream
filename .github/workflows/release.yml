@@ -1,0 +1,262 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      side:
+        description: Which side to release
+        required: true
+        type: choice
+        options:
+          - switch
+          - client
+      version:
+        description: Version without any prefix (e.g. 1.0.0)
+        required: true
+        type: string
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Validate version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check version, notes and tag
+        env:
+          VERSION: ${{ inputs.version }}
+          SIDE: ${{ inputs.side }}
+        run: |
+          if [ "$SIDE" != switch ] && [ "$SIDE" != client ]; then
+            echo "Invalid side: expected switch or client"
+            exit 1
+          fi
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid version: expected MAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          if [ ! -f ".github/release-notes/$SIDE-$VERSION.md" ]; then
+            echo "Missing .github/release-notes/$SIDE-$VERSION.md"
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$SIDE-v$VERSION" > /dev/null; then
+            echo "Tag $SIDE-v$VERSION already exists"
+            exit 1
+          fi
+
+  plan:
+    name: Content ids
+    needs: check
+    runs-on: ubuntu-latest
+    outputs:
+      windows_id: ${{ steps.ids.outputs.windows_id }}
+      linux_id: ${{ steps.ids.outputs.linux_id }}
+      module_id: ${{ steps.ids.outputs.module_id }}
+      manager_id: ${{ steps.ids.outputs.manager_id }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Compute content ids
+        id: ids
+        run: bash .github/scripts/content-ids.sh | tee -a "$GITHUB_OUTPUT"
+      - name: Previous manifest
+        run: |
+          existing="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1)"
+          if [ -z "$existing" ]; then
+            echo '{}' > prev.json
+          else
+            gh release download --repo "$GITHUB_REPOSITORY" --pattern nxstream-manifest.json -O prev.json --clobber
+          fi
+          cat prev.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prev-manifest
+          path: prev.json
+
+  switch:
+    name: Switch (sysmodule + manager)
+    needs: [check, plan]
+    if: inputs.side == 'switch'
+    runs-on: ubuntu-latest
+    container: devkitpro/devkita64:latest
+    env:
+      VERSION: ${{ inputs.version }}
+      NXSTREAM_MODULE_ID: ${{ needs.plan.outputs.module_id }}
+      NXSTREAM_MANAGER_ID: ${{ needs.plan.outputs.manager_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: |
+          missing=""
+          for p in switch-sdl2 switch-sdl2_ttf switch-sdl2_image switch-curl; do
+            dkp-pacman -Q "$p" >/dev/null 2>&1 || missing="$missing $p"
+          done
+          if [ -n "$missing" ]; then
+            ok=0
+            for attempt in 1 2 3; do
+              if dkp-pacman -Sy --noconfirm --needed $missing; then ok=1; break; fi
+              echo "portlibs install attempt $attempt failed"
+              sleep 20
+            done
+            if [ "$ok" != 1 ]; then echo "missing portlibs:$missing"; exit 1; fi
+          fi
+          for t in python3 git zip; do
+            command -v "$t" >/dev/null 2>&1 || need="$need $t"
+          done
+          if [ -n "$need" ]; then
+            apt-get update
+            apt-get install -y $need
+          fi
+      - name: Build
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          bash switch/build.sh "$VERSION"
+      - name: Package
+        run: |
+          mkdir -p out
+          (cd switch/dist && zip -r "$GITHUB_WORKSPACE/out/NXStream-$VERSION-switch.zip" .)
+          contents="switch/dist/atmosphere/contents/4200000000004E53"
+          cp "$contents/exefs.nsp" "out/NXStream-$VERSION-switch-exefs.nsp"
+          cp "$contents/toolbox.json" "out/NXStream-$VERSION-switch-toolbox.json"
+          cp "$contents/nxstream.id" "out/NXStream-$VERSION-switch-nxstream.id"
+          cp switch/dist/switch/NXStream/nxstream.nro "out/NXStream-$VERSION-switch-nxstream.nro"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-switch
+          path: out/*
+
+  windows:
+    name: PC viewer (Windows)
+    needs: [check, plan]
+    if: inputs.side == 'client'
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ inputs.version }}
+      CONTENT_ID: ${{ needs.plan.outputs.windows_id }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Download FFmpeg (LGPL)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force ffmpeg-dl, ffmpeg-bin | Out-Null
+          gh release download latest --repo BtbN/FFmpeg-Builds --pattern 'ffmpeg-n8.*-latest-win64-lgpl-8.*.zip' --dir ffmpeg-dl
+          $zip = Get-ChildItem ffmpeg-dl -Filter *.zip | Select-Object -First 1
+          if (-not $zip) { throw 'FFmpeg archive not found' }
+          Expand-Archive $zip.FullName -DestinationPath ffmpeg-dl/x
+          $exe = Get-ChildItem ffmpeg-dl/x -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          $lic = Get-ChildItem ffmpeg-dl/x -Recurse -Filter LICENSE.txt | Select-Object -First 1
+          if (-not $exe -or -not $lic) { throw 'ffmpeg.exe or LICENSE.txt missing' }
+          Copy-Item $exe.FullName ffmpeg-bin/ffmpeg.exe
+          Copy-Item $lic.FullName ffmpeg-bin/FFMPEG-LICENSE.txt
+          Add-Content $env:GITHUB_PATH (Resolve-Path ffmpeg-bin).Path
+      - name: Build
+        shell: pwsh
+        run: pwsh pc/build-windows.ps1 -BundleFfmpeg -FfmpegLicense (Resolve-Path ffmpeg-bin/FFMPEG-LICENSE.txt).Path -Version $env:VERSION -ContentId $env:CONTENT_ID
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item pc/dist/NXStream.exe "out/NXStream-$env:VERSION-windows-x64.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: out/*
+
+  linux:
+    name: Linux viewer (AppImage)
+    needs: [check, plan]
+    if: inputs.side == 'client'
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ inputs.version }}
+      CONTENT_ID: ${{ needs.plan.outputs.linux_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-2.0-0 libsdl2-image-2.0-0 libsdl2-ttf-2.0-0 libusb-1.0-0 file desktop-file-utils
+      - name: Download FFmpeg (static)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p ffmpeg-dl ffmpeg-bin
+          gh release download latest --repo BtbN/FFmpeg-Builds --pattern 'ffmpeg-n8.*-latest-linux64-gpl-8.*.tar.xz' --dir ffmpeg-dl
+          tarball="$(ls ffmpeg-dl/*.tar.xz | head -n 1)"
+          [ -n "$tarball" ] || { echo "FFmpeg archive not found"; exit 1; }
+          tar -xf "$tarball" -C ffmpeg-dl --wildcards '*/bin/ffmpeg'
+          exe="$(find ffmpeg-dl -type f -path '*/bin/ffmpeg' | head -n 1)"
+          [ -n "$exe" ] || { echo "ffmpeg missing"; exit 1; }
+          install -m 755 "$exe" ffmpeg-bin/ffmpeg
+          ffmpeg-bin/ffmpeg -hide_banner -version | head -n 1
+          echo "$PWD/ffmpeg-bin" >> "$GITHUB_PATH"
+      - name: Build AppImage
+        run: bash pc/build-linux.sh --bundle-ffmpeg --version "$VERSION" --content-id "$CONTENT_ID"
+      - name: Rename
+        run: |
+          mkdir -p out
+          mv pc/dist-linux/NXStream-x86_64.AppImage "out/NXStream-$VERSION-linux-x86_64.AppImage"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: out/*.AppImage
+
+  release:
+    name: Publish release
+    needs: [plan, switch, windows, linux]
+    if: always() && needs.plan.result == 'success' && ((inputs.side == 'switch' && needs.switch.result == 'success') || (inputs.side == 'client' && needs.windows.result == 'success' && needs.linux.result == 'success'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ inputs.version }}
+      SIDE: ${{ inputs.side }}
+      TAG: ${{ inputs.side }}-v${{ inputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      TARGET_SHA: ${{ github.sha }}
+      WINDOWS_ID: ${{ needs.plan.outputs.windows_id }}
+      LINUX_ID: ${{ needs.plan.outputs.linux_id }}
+      MODULE_ID: ${{ needs.plan.outputs.module_id }}
+      MANAGER_ID: ${{ needs.plan.outputs.manager_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: assets
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: prev-manifest
+          path: prev
+      - name: Build manifest
+        run: |
+          if [ "$SIDE" = switch ]; then
+            ids=(--module-id "$MODULE_ID" --manager-id "$MANAGER_ID")
+          else
+            ids=(--windows-id "$WINDOWS_ID" --linux-id "$LINUX_ID")
+          fi
+          python3 -I .github/scripts/make_manifest.py --side "$SIDE" --tag "$TAG" --version "$VERSION" \
+            --repo burlone0/NXStream --prev prev/prev.json --assets assets "${ids[@]}"
+          cat assets/nxstream-manifest.json
+      - name: Create release
+        run: |
+          ls -l assets
+          gh release create "$TAG" assets/* \
+            --title "$TAG" \
+            --notes-file ".github/release-notes/$SIDE-$VERSION.md" \
+            --target "$TARGET_SHA" \
+            --latest

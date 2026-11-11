@@ -1,0 +1,57 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>NXStream</AssemblyName>
+    <RootNamespace>NXStream</RootNamespace>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <Version>1.0.0</Version>
+    <Product>NXStream</Product>
+    <Description>Nintendo Switch screen and audio on the PC</Description>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release' And (('$(FfmpegPath)' != '' And Exists('$(FfmpegPath)')) Or ('$(LibusbPath)' != '' And Exists('$(LibusbPath)')))">
+    <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(FfmpegPath)' != '' And Exists('$(FfmpegPath)')">
+    <None Include="$(FfmpegPath)" Link="ffmpeg.exe" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(FfmpegLicensePath)' != '' And Exists('$(FfmpegLicensePath)')">
+    <None Include="$(FfmpegLicensePath)" Link="FFMPEG-LICENSE.txt" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(LibusbPath)' != '' And Exists('$(LibusbPath)')">
+    <None Include="$(LibusbPath)" Link="libusb-1.0.dll" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(LibusbLicensePath)' != '' And Exists('$(LibusbLicensePath)')">
+    <None Include="$(LibusbLicensePath)" Link="LIBUSB-LICENSE.txt" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="NXStreamContentId" Value="$(ContentId)" Condition="'$(ContentId)'!=''" />
+  </ItemGroup>
+
+</Project>

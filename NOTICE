@@ -1,0 +1,10 @@
+NXStream is licensed under the PolyForm Strict License 1.0.0 (see LICENSE).
+It may be used for personal, noncommercial purposes only. Redistribution and
+distribution of changed versions are not permitted.
+
+The name "NXStream" and its logo are reserved by the author. Forks or derived
+works may not use them.
+
+Third-party components keep their own licenses, as listed in the "Third-party
+software" section of README.md: FFmpeg (LGPL / GPL), libusb (LGPL-2.1), SDL2 (zlib), and the
+bundled fonts (SIL OFL, Bitstream Vera).

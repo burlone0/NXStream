@@ -1,0 +1,77 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  switch:
+    name: Switch (sysmodule + manager)
+    runs-on: ubuntu-latest
+    container: devkitpro/devkita64:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install portlibs
+        run: |
+          missing=""
+          for p in switch-sdl2 switch-sdl2_ttf switch-sdl2_image switch-curl; do
+            dkp-pacman -Q "$p" >/dev/null 2>&1 || missing="$missing $p"
+          done
+          if [ -n "$missing" ]; then
+            ok=0
+            for attempt in 1 2 3; do
+              if dkp-pacman -Sy --noconfirm --needed $missing; then ok=1; break; fi
+              echo "portlibs install attempt $attempt failed"
+              sleep 20
+            done
+            if [ "$ok" != 1 ]; then echo "missing portlibs:$missing"; exit 1; fi
+          fi
+          for t in python3 git zip; do
+            command -v "$t" >/dev/null 2>&1 || need="$need $t"
+          done
+          if [ -n "$need" ]; then
+            apt-get update
+            apt-get install -y $need
+          fi
+      - name: Build
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          bash switch/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nxstream-switch-sd
+          path: switch/dist/
+
+  windows:
+    name: PC viewer (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Build
+        run: pwsh pc/build-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nxstream-pc
+          path: pc/dist/NXStream.exe
+
+  linux:
+    name: Linux viewer (AppImage)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-2.0-0 libsdl2-image-2.0-0 libsdl2-ttf-2.0-0 libusb-1.0-0 file desktop-file-utils
+      - name: Build AppImage
+        run: bash pc/build-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nxstream-linux
+          path: pc/dist-linux/*.AppImage

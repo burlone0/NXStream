@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=NXStream
+Comment=Nintendo Switch stream viewer
+Exec=nxstream
+Icon=nxstream
+Categories=Video;AudioVideo;
+Terminal=false
